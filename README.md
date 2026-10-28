@@ -240,7 +240,8 @@ client's address: it is **not encrypted**, so use it only on a trusted LAN.
 The copy runner (`copyq.py run`, the `<NAME_PREFIX>-copy` service) starts the push on the source as a transient unit
 (`PUSH_UNIT`, one at a time, survives a lost controller), moves files that Protect deleted on the source meanwhile to
 `<slug>.gone`, retries transport failures, stops on anything else, and verifies every finished camera
-(`tool/verify-staged.sh`: no source row added or changed, every staged file re-read on the target, samples re-read on
+(`tool/verify-staged.sh`: no source row added or changed apart from the successor update that comes with a deletion
+(MECHANISM.md 5; that file is then re-read on the source), every staged file re-read on the target, samples re-read on
 the source). Footage the source threw out mid-job is not dragged back in; it is listed in `<slug>.gone` and
 reported.
 
@@ -300,6 +301,9 @@ through T0 to T19, most of them injected faults.
   the runner's verify cleanup.
 - `tool/test-verify-media.sh`: verify-media.sh's verdict with fake ssh / curl / ffprobe (`*.invalid` hosts): failed
   or empty queries, the events count against the API, ffprobe's exit status and codec.
+- `tool/test-verify-rows.sh`: the copy verify's rows check on synthetic rows, and verify-staged.sh with fake ssh / scp
+  (`*.invalid` hosts): the successor update of a deleted file passes and its source file is re-read (a mismatch fails,
+  a file deleted since is skipped); a row added, any other change and an unexplained missing row fail.
 - `tool/test-verify-sql.sh`: the generated verify.sql on synthetic recording rows in a throw-away database of the
   controller's container: a continued thumbnails / timelapse file is INFO, any other change (a rotating file's end,
   size, an earlier or missing end, free, any other column) a FAIL, a vanished row fails the present check; the

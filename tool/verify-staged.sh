@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # verify-staged.sh <slug> <mac> --- post-copy reconciliation for one camera's source -> target staging copy.
-# Three independent paths: (1) source recordingFiles rows vs the pre-copy snapshot: no row may be added or changed; a row
-# may only have disappeared (Protect deletes the oldest recordings) if its file was copied before that, or it is in
-# <slug>.gone (deleted before it could be copied: the copy runner drops those from the list), or it is outside
-# <slug>.list (e.g. a filtered list); (2) target coreutils sha256sum re-read of every staged file vs the source-side
-# streaming ledger, (3) source coreutils sha256sum re-read of 2 sampled source files vs the ledger.
+# Three independent paths: (1) source recordingFiles rows vs the pre-copy snapshot (verify-rows.py): no row may be added
+# or changed; a row may only have disappeared (Protect deletes the oldest recordings) if its file was copied before that,
+# or it is in <slug>.gone (deleted before it could be copied: the copy runner drops those from the list), or it is
+# outside <slug>.list (e.g. a filtered list); the one change allowed is the successor update such a deletion brings
+# (MECHANISM.md 5: next row of the same type + channel, `start` = the deleted row's `end`, only `updatedAt` besides),
+# and (1b) re-reads every copied successor on the source against the ledger; (2) target coreutils sha256sum re-read of
+# every staged file vs the source-side streaming ledger, (3) source coreutils sha256sum re-read of 2 sampled source
+# files vs the ledger.
 # Env: PUSH_LEDGER (source-side ledger path; test runs only).
 set -euo pipefail
 TOOL=$(cd "$(dirname "$0")" && pwd); . "$TOOL/lib-site.sh"
@@ -24,38 +27,16 @@ scp -q "$SOURCE_SSH:$LEDGER" "$D/$slug.ledger.jsonl"
 # (1) rows
 ssh "$SOURCE_SSH" "psql -U postgres -p 5433 -h 127.0.0.1 -d unifi-protect -X -At -F '|' -v ON_ERROR_STOP=1 -v mac=$mac -f -" < "$TOOL/rows.sql" > "$D/$slug.rows.post"
 [ -s "$D/$slug.rows.post" ] || { echo "FAIL: post-copy rows query returned nothing"; exit 1; }
-python3 - "$D/$slug.rows.pre" "$D/$slug.rows.post" "$D/$slug.ledger.jsonl" "$D/$slug.list" "$D/$slug.gone" << 'EOF'
-import json, os, sys
-pre_f, post_f, led_f, list_f, gone_f = sys.argv[1:]
-pre = [l.rstrip('\n') for l in open(pre_f) if l.strip()]
-post = [l.rstrip('\n') for l in open(post_f) if l.strip()]
-added = sorted(set(post) - set(pre))
-post_ids = {l.split('|')[0] for l in post}
-removed = [l.split('|')[0] for l in pre if l.split('|')[0] not in post_ids]
-if not added and not removed:
-    print(f'rows: unchanged ({len(post)})')
-    sys.exit(0)
-ok = set()
-for l in open(led_f):
-    r = json.loads(l)
-    if r['result'] == 'ok' and r['remote'] == 'OK %d %s' % (r['size'], r['sha256']):
-        ok.add(r['id'])
-listed = {l.split('|')[0] for l in open(list_f) if l.strip()}
-gone = {l.split('|')[0] for l in open(gone_f) if l.strip()} if os.path.exists(gone_f) else set()
-copied = [i for i in removed if i in ok]
-lost = [i for i in removed if i not in ok and i in gone]
-outside = [i for i in removed if i not in ok and i not in gone and i not in listed]
-bad = [i for i in removed if i not in ok and i not in gone and i in listed]
-print(f'rows: CHANGED --- pre {len(pre)}, post {len(post)}; added/changed {len(added)}; disappeared {len(removed)} '
-      f'(copied before deletion {len(copied)}, in .gone {len(lost)}, outside this list {len(outside)}, unexplained {len(bad)})')
-for l in added[:5]:
-    print('  added/changed:', l[:200])
-for i in bad[:5]:
-    print('  unexplained disappearance:', i)
-if added or bad:
-    print('FAIL: source rows changed in a way the copy cannot account for')
-    sys.exit(1)
-EOF
+python3 "$TOOL/verify-rows.py" "$D/$slug.rows.pre" "$D/$slug.rows.post" "$D/$slug.ledger.jsonl" "$D/$slug.list" \
+  "$D/$slug.gone" "$D/$slug.successors"
+
+# (1b) a successor's file must still be the bytes the ledger holds: its row changed, the file must not have
+while IFS='|' read -r id src want; do
+  got=$(ssh "$SOURCE_SSH" "nice -n19 ionice -c3 sha256sum $src" < /dev/null | cut -c1-64) || got=''
+  if [ "$want" = "$got" ]; then echo "successor re-read OK: ${src##*/}"
+  elif ssh "$SOURCE_SSH" "test -e $src" < /dev/null; then echo "FAIL successor re-read MISMATCH: ${src##*/}"; exit 1
+  else echo "successor re-read skipped (deleted on the source since): ${src##*/}"; fi
+done < "$D/$slug.successors"
 
 python3 - "$D/$slug.ledger.jsonl" "$D/$slug.list" > "$D/$slug.expected" << 'EOF'
 import json, sys

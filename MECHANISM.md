@@ -86,6 +86,20 @@ and not free` on consecutive days.
 Tool: `verify.sql` reports such a row (thumbnails / timelapse, later `end`, every other column unchanged) as an `INFO`
 line, any other change to an imported row as a FAIL. `rollback.sql` still refuses on it: the file now holds native data.
 
+Behaviour: when Protect deletes a camera's oldest recording file to free space, it also updates the row of the next file
+of the same type and channel: `start` becomes the deleted file's `end` (a few milliseconds later where the two
+overlapped, the same value where they touched) and `updatedAt` changes, while `file`, `size`, `end` and the flags stay.
+The file itself is not rewritten: its modification time and sha256 stay those of the day it was recorded. Seen on two
+consecutive daily deletions in one camera's rotating channel-0 chain (once overlapping by 4 ms: `start` moved; once
+touching: only `updatedAt` changed).
+
+Check: `select id, file, start, "end", "updatedAt" from "recordingFiles" where "cameraId" = '<id>' and type = 'rotating'
+and channel = 0 and not free order by start limit 3` before and after a deletion, and `sha256sum` of the second file.
+
+Tool: the copy verify (`verify-staged.sh`, rows check in `verify-rows.py`) accepts exactly that change on a row whose
+predecessor disappeared during the same copy, and then re-reads that file on the source against the ledger (a mismatch
+is a FAIL); any other added or changed source row during a copy is a FAIL.
+
 ## 6. The services the window touches and their dependencies
 
 Behaviour: the window's units and the dependency lists in `tool/unit-model.txt`.
