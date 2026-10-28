@@ -1,0 +1,12 @@
+# @NAME_PREFIX@-copy-summary.service --- daily summary of the import (copy queue, ready windows, observation, the
+# source's deletion front) through the notification hook. Rendered by install/render.sh.
+[Unit]
+Description=@NAME_PREFIX@: daily summary of the recording import
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=@HOME@
+Environment=IMPORT_SITE=@SITE_FILE@
+ExecStart=@TOOL_DIR@/copyq.py summary

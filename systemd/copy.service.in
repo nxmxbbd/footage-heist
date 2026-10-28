@@ -1,0 +1,19 @@
+# @NAME_PREFIX@-copy.service --- the copy queue runner (tool/copyq.py run). Rendered by install/render.sh.
+[Unit]
+Description=@NAME_PREFIX@: @SOURCE_NAME@ -> @TARGET_NAME@ recording copy queue runner (state @IMPORT_DIR@/copyq)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=4
+
+[Service]
+Type=simple
+Environment=HOME=@HOME@
+Environment=IMPORT_SITE=@SITE_FILE@
+ExecStart=@TOOL_DIR@/copyq.py run
+# exit 0 = queue empty / paused / stopped on an error (needs a human); a crash restarts and adopts the running push
+Restart=on-failure
+RestartSec=120
+
+[Install]
+WantedBy=multi-user.target

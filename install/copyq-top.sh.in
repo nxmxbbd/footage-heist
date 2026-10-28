@@ -1,0 +1,9 @@
+#!/bin/sh
+# copyq-top --- installed as /usr/local/bin/copyq-top (a real file, root-owned 0755: the tool directory may be unreadable
+# for users). Not root -> re-run through sudo (copyq-top.sudoers allows exactly that without a password). Root -> the
+# read-only TUI; the site configuration is pinned here because sudo resets the environment, and PATH is pinned because
+# sudo keeps the user's PATH when secure_path is not set (python3, ssh, systemctl and journalctl are looked up in it).
+# Rendered by install/render.sh.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH     # first: as root, even `id` would come from the user's PATH
+[ "$(id -u)" = 0 ] || exec sudo /usr/local/bin/copyq-top "$@"
+IMPORT_SITE=@SITE_FILE@ exec python3 -E -s @TOOL_DIR@/copyq-top.py "$@"

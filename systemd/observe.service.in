@@ -1,0 +1,10 @@
+# @NAME_PREFIX@-observe.service --- read-only daily check of imported batches during their observation period
+# (tool/observe-all.sh; notification hook on a problem). Rendered by install/render.sh.
+[Unit]
+Description=@NAME_PREFIX@: daily check of imported batches during their observation period
+
+[Service]
+Type=oneshot
+Environment=HOME=@HOME@
+Environment=IMPORT_SITE=@SITE_FILE@
+ExecStart=@TOOL_DIR@/observe-all.sh

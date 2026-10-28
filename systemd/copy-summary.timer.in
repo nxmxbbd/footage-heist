@@ -1,0 +1,10 @@
+# @NAME_PREFIX@-copy-summary.timer --- after the observation check. Rendered by install/render.sh.
+[Unit]
+Description=@NAME_PREFIX@: daily @SUMMARY_TIME@ recording import summary (doubles as the copy runner heartbeat)
+
+[Timer]
+OnCalendar=*-*-* @SUMMARY_TIME@:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

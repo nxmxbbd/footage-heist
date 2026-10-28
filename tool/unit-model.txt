@@ -1,0 +1,105 @@
+# unit-model.txt --- the systemd dependencies of the units a window stops and starts on the target.
+#
+# tool/test-window.sh simulates exactly this graph (its fake systemctl); night.sh compares it with the target before
+# prep / go / rollback and refuses on any difference (recover only warns). A firmware or Protect update that changes
+# these units therefore stops the tool instead of silently invalidating the sandbox tests. tool/unit-graph.py reads it.
+#
+# Validated on: Protect 7.3.70 (systemctl show on the target console, 2026-10-27).
+#
+# Format (one item per line, '#' comments):
+#   unit <name>                    a unit of the window set; the target must report it with LoadState=loaded
+#   <name> <Property> [unit ...]   its complete dependency list as `systemctl show -p <Property>` reports it (every
+#                                  unit type; order does not matter); Property = Requires Requisite BindsTo PartOf
+#                                  Wants Conflicts OnFailure ConflictedBy (+ Upholds UpheldBy PropagatesStopTo
+#                                  StopPropagatedFrom OnSuccess, compared only when the target reports them).
+#                                  OnFailure and the optional ones must stay empty: the fake does not simulate them
+#                                  (tool/unit-graph.py lint refuses a model that has them). ConflictedBy must list
+#                                  exactly the window units that list this one under Conflicts (systemd reports the
+#                                  reverse edge that way; one from a unit outside the set is not simulated: lint refuses)
+#   observed-stop <name> <unit>... behaviour seen on a real target that no declared dependency explains: simulated by
+#                                  test-window.sh, never compared (systemctl show cannot see it). When a stop reaches
+#                                  <name> (explicit, Conflicts, propagated, or another observed-stop line), the units
+#                                  listed go down as if stopped: their own dependents and observed-stop lines follow.
+#                                  Record only what was seen
+#
+# Propagation the fake applies (systemd semantics): stop of X reaches every unit that lists X under Requires,
+# Requisite, BindsTo or PartOf (transitively), and each unit that goes down brings its observed-stop line (to a fixed
+# point); restart of X is that stop, then the start of X, then the start of the units of X's stop closure that were
+# active before (try-restart, through the same start path; the fake always starts X first, as After= would order a
+# dependent); start of X pulls in X's Requires, BindsTo and Wants (also when X is already active, and also when X
+# itself then fails to start), stops every unit X conflicts with (Conflicts in either direction; that stop takes along
+# what an explicit stop would, also when X is already active), and fails if a Requisite unit is not active.
+
+unit unifi-protect.service
+unit postgresql@14-protect.service
+unit msr.service
+unit msp.service
+unit mst.service
+unit ms.service
+
+unifi-protect.service Requires app-protect.slice network.target sysinit.target
+unifi-protect.service Requisite
+unifi-protect.service BindsTo
+unifi-protect.service PartOf
+unifi-protect.service Wants ai-feature-console.service ds-monitor.service ds.service ms.service msp.service msr.service mst.service msx-monitor.service postgresql-cluster@14-protect.service
+unifi-protect.service Conflicts shutdown.target
+unifi-protect.service OnFailure
+unifi-protect.service ConflictedBy
+
+# PartOf=unifi-protect: stopping Protect stops its PostgreSQL (seen on the target as well)
+postgresql@14-protect.service Requires app-protect.slice sysinit.target
+postgresql@14-protect.service Requisite
+postgresql@14-protect.service BindsTo
+postgresql@14-protect.service PartOf postgresql.service unifi-protect.service
+postgresql@14-protect.service Wants
+postgresql@14-protect.service Conflicts shutdown.target
+postgresql@14-protect.service OnFailure
+postgresql@14-protect.service ConflictedBy
+
+msr.service Requires app-protect.slice network.target sysinit.target
+msr.service Requisite
+msr.service BindsTo
+msr.service PartOf
+msr.service Wants postgresql-cluster@14-protect.service postgresql@14-protect.service
+msr.service Conflicts shutdown.target
+msr.service OnFailure
+msr.service ConflictedBy
+
+msp.service Requires app-protect.slice network.target sysinit.target
+msp.service Requisite
+msp.service BindsTo
+msp.service PartOf
+msp.service Wants postgresql-cluster@14-protect.service postgresql@14-protect.service
+msp.service Conflicts shutdown.target
+msp.service OnFailure
+msp.service ConflictedBy
+
+mst.service Requires app-protect.slice network.target sysinit.target
+mst.service Requisite
+mst.service BindsTo
+mst.service PartOf
+mst.service Wants
+mst.service Conflicts shutdown.target
+mst.service OnFailure
+mst.service ConflictedBy
+
+ms.service Requires app-protect.slice network.target sysinit.target
+ms.service Requisite
+ms.service BindsTo
+ms.service PartOf
+ms.service Wants
+ms.service Conflicts shutdown.target
+ms.service OnFailure
+ms.service ConflictedBy
+
+# Not captured when this model was made, so the first preflight on a target confirms them: Requisite and OnFailure
+# (assumed empty) and Conflicts (shutdown.target, inferred from the default dependencies every unit shows: Requires=
+# sysinit.target and Before=shutdown.target).
+
+# Pull-ins of units outside this set (Protect's Wants=, the postgresql-cluster@14-protect oneshot that msr and msp
+# Want) happen on the target but are not simulated: only the six units above have states in the fake.
+
+# msr ended together with Protect when Protect was stopped (no declared dependency explains it). ms is stopped by
+# msx-monitor (a Protect Wants= unit) within about two minutes while Protect is down; simulated at once, because the
+# window never waits for ms and stops msp / mst itself.
+observed-stop unifi-protect.service msr.service ms.service

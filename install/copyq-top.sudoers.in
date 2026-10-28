@@ -1,0 +1,5 @@
+# /etc/sudoers.d/copyq-top --- @TOP_USER@ may run the read-only copy-queue TUI as root without a password.
+# Everything the rule reaches must be root-owned and root-writable only: /usr/local/bin/copyq-top (0755) and the tool
+# directory it executes from. Arguments are pinned: none, or exactly --once. Rendered by install/render.sh; check with
+# visudo -cf before installing.
+@TOP_USER@ ALL=(root) NOPASSWD: /usr/local/bin/copyq-top "", /usr/local/bin/copyq-top --once

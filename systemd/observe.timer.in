@@ -1,0 +1,10 @@
+# @NAME_PREFIX@-observe.timer --- batches listed in @IMPORT_DIR@/observe.list. Rendered by install/render.sh.
+[Unit]
+Description=@NAME_PREFIX@: daily @OBSERVE_TIME@ observation check of imported batches
+
+[Timer]
+OnCalendar=*-*-* @OBSERVE_TIME@:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

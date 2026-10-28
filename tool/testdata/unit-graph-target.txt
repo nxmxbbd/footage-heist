@@ -1,0 +1,65 @@
+Id=unifi-protect.service
+Requires=network.target app-protect.slice sysinit.target
+Requisite=
+Wants=ai-feature-console.service msx-monitor.service ds-monitor.service msp.service mst.service ms.service ds.service postgresql-cluster@14-protect.service msr.service
+Conflicts=shutdown.target
+BindsTo=
+PartOf=
+OnFailure=
+ConflictedBy=
+LoadState=loaded
+
+Id=postgresql@14-protect.service
+Requires=sysinit.target app-protect.slice
+Requisite=
+Wants=
+Conflicts=shutdown.target
+BindsTo=
+PartOf=unifi-protect.service postgresql.service
+OnFailure=
+ConflictedBy=
+LoadState=loaded
+
+Id=msr.service
+Requires=app-protect.slice sysinit.target network.target
+Requisite=
+Wants=postgresql-cluster@14-protect.service postgresql@14-protect.service
+Conflicts=shutdown.target
+BindsTo=
+PartOf=
+OnFailure=
+ConflictedBy=
+LoadState=loaded
+
+Id=msp.service
+Requires=sysinit.target network.target app-protect.slice
+Requisite=
+Wants=postgresql-cluster@14-protect.service postgresql@14-protect.service
+Conflicts=shutdown.target
+BindsTo=
+PartOf=
+OnFailure=
+ConflictedBy=
+LoadState=loaded
+
+Id=mst.service
+Requires=sysinit.target network.target app-protect.slice
+Requisite=
+Wants=
+Conflicts=shutdown.target
+BindsTo=
+PartOf=
+OnFailure=
+ConflictedBy=
+LoadState=loaded
+
+Id=ms.service
+Requires=sysinit.target app-protect.slice network.target
+Requisite=
+Wants=
+Conflicts=shutdown.target
+BindsTo=
+PartOf=
+OnFailure=
+ConflictedBy=
+LoadState=loaded
