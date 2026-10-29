@@ -46,6 +46,9 @@ create table stage."smartDetectObjects" as
 update stage."smartDetectObjects" set "cameraId" = :'ucam';
 create table stage."smartDetectObjectAreas" as
   select * from public."smartDetectObjectAreas" where "smartDetectObjectId" in (select id from stage."smartDetectObjects");
+-- enhanced images of the objects (seen: type face; no camera column, at most one per object)
+create table stage."enhancedImages" as
+  select * from public."enhancedImages" where "smartDetectObjectId" in (select id from stage."smartDetectObjects");
 
 -- face / vehicle groups referenced by the objects (inserted or merged in apply)
 create table stage."smartDetectObjectGroups" as
@@ -77,6 +80,16 @@ do $$ begin
   end if;
 end $$;
 
+-- transcriptions of the events (seen on smartAudioDetect events); a row on another camera than the batch camera has no
+-- mapping here: refuse instead of moving it to the target camera (a NULL in the source stays NULL)
+create table stage.transcriptions as select * from public.transcriptions where "eventId" in (select id from stage.events);
+do $$ begin
+  if exists (select 1 from stage.transcriptions where "cameraId" <> current_setting('extract.cam')) then
+    raise exception 'transcriptions on another camera than the batch camera --- not handled';
+  end if;
+end $$;
+update stage.transcriptions set "cameraId" = :'ucam' where "cameraId" = :'cam';
+
 -- detection labels: lids -> names (camera id rewritten); lids are resolved on the target in apply
 create table stage."detectionLabels" as
   select d.*,
@@ -107,10 +120,6 @@ create table stage.labels as
 do $$ declare n bigint; begin
   select count(*) into n from public."smartDetectSessionObjects" where "smartDetectObjectId" in (select id from stage."smartDetectObjects");
   if n > 0 then raise exception 'smartDetectSessionObjects: % rows, not handled', n; end if;
-  select count(*) into n from public."enhancedImages" where "smartDetectObjectId" in (select id from stage."smartDetectObjects");
-  if n > 0 then raise exception 'enhancedImages: % rows, not handled', n; end if;
-  select count(*) into n from public.transcriptions where "eventId" in (select id from stage.events);
-  if n > 0 then raise exception 'transcriptions: % rows, not handled', n; end if;
   select count(*) into n from public."smartDetectSessions" where "eventId" in (select id from stage.events);
   if n > 0 then raise exception 'smartDetectSessions: % rows, not handled', n; end if;
   select count(*) into n from public."favoriteEvents" where "eventId" in (select id from stage.events);
@@ -123,8 +132,9 @@ end $$;
 
 -- the source camera id must not survive anywhere in the staged rows
 do $$ declare t text; n bigint; begin
-  foreach t in array array['events','recordingFiles','smartDetectObjects','smartDetectObjectAreas','smartDetectObjectGroups',
-                           'heatmaps','smartDetectTracks','ramDetections','detectionLabels','labels'] loop
+  foreach t in array array['events','recordingFiles','smartDetectObjects','smartDetectObjectAreas','enhancedImages',
+                           'smartDetectObjectGroups','heatmaps','smartDetectTracks','ramDetections','transcriptions',
+                           'detectionLabels','labels'] loop
     execute format('select count(*) from stage.%I x where to_jsonb(x)::text like %L', t, '%' || current_setting('extract.cam') || '%') into n;
     if n > 0 then raise exception 'old camera id still present in stage.% (% rows)', t, n; end if;
   end loop;
@@ -133,7 +143,9 @@ commit;
 
 select 'events' t, count(*) from stage.events union all select 'recordingFiles', count(*) from stage."recordingFiles"
 union all select 'smartDetectObjects', count(*) from stage."smartDetectObjects" union all select 'smartDetectObjectAreas', count(*) from stage."smartDetectObjectAreas"
+union all select 'enhancedImages', count(*) from stage."enhancedImages"
 union all select 'smartDetectObjectGroups', count(*) from stage."smartDetectObjectGroups" union all select 'heatmaps', count(*) from stage.heatmaps
 union all select 'smartDetectTracks', count(*) from stage."smartDetectTracks" union all select 'ramDetections', count(*) from stage."ramDetections"
+union all select 'transcriptions', count(*) from stage.transcriptions
 union all select 'detectionLabels', count(*) from stage."detectionLabels" union all select 'labels', count(*) from stage.labels;
 select 'dropped dangling lids', count(*) || ' (rows ' || count(distinct "detectionLabelId") || ', events ' || count(distinct "eventId") || ')' from stage.dropped_lids;

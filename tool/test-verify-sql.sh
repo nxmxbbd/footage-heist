@@ -47,6 +47,7 @@ create table public.events (id text, \"cameraId\" text);
 create table public.\"smartDetectObjects\" (id text); create table public.\"smartDetectObjectAreas\" (id text);
 create table public.heatmaps (id text); create table public.\"smartDetectTracks\" (id text);
 create table public.\"ramDetections\" (id text); create table public.\"detectionLabels\" (id text);
+create table public.\"enhancedImages\" (id text); create table public.transcriptions (id text);
 insert into $SCH.\"recordingFiles\" values
   ('rot', 'cam1', '2023/11/14', '${F}_rotating_1700000000000.ubv', 1700000000000, 1700086400000, 1073741824, 'rotating', 0),
   ('thu', 'cam1', '2023/11/14', '${F}_thumbnails_1700000000000.ubv', 1700000000000, 1700086400000, 1073741824, 'thumbnails', 0),

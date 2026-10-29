@@ -252,10 +252,11 @@ recover)
   ;;
 drop-staging)
   # after verify: drop the staging DATA tables (ramDetections staging depends on pgvector's type; a later Protect migration
-  # must not trip over it). Kept: ledger, ledger_history, recordingFiles + smartDetectObjectGroups staging (rollback.sql needs them)
+  # must not trip over it). Kept: ledger, ledger_history, recordingFiles + smartDetectObjectGroups staging (rollback.sql needs them).
+  # enhancedImages / transcriptions with "if exists": a batch generated before they were imported has no staging table for them
   rs "$RPSQL -At -c \"select count(*) from $LEDGER_SCHEMA.ledger where batch='$SLUG'\"" | grep -qx '[1-9][0-9]*' || { echo "no committed batch --- nothing to drop"; exit 1; }
   S=$SCHEMA
-  rs "$RPSQL -c 'drop table $S.\"events\", $S.\"smartDetectObjects\", $S.\"smartDetectObjectAreas\", $S.heatmaps,
+  rs "$RPSQL -c 'drop table if exists $S.\"enhancedImages\", $S.transcriptions' -c 'drop table $S.\"events\", $S.\"smartDetectObjects\", $S.\"smartDetectObjectAreas\", $S.heatmaps,
       $S.\"smartDetectTracks\", $S.\"ramDetections\", $S.\"detectionLabels\", $S.labels' -c \"select string_agg(c.relname, ' ') from pg_class c where c.relnamespace = '$S'::regnamespace and c.relkind = 'r'\""
   ;;
 *) echo "usage: $0 <batch_dir> preflight|clone-dump|prep|backup|trial|go|status|verify|refresh-verify|rollback|recover|drop-staging"; exit 64 ;;

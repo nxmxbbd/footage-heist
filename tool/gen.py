@@ -168,9 +168,10 @@ def refresh_verify(bdir):
     print(f'{path}: recordingFiles check refreshed ({", ".join(RF_CONTINUED_TYPES)} continued by the recorder = INFO)')
 
 
-# FK order for inserts (groups / labels are handled separately before these)
-TABLES = ['recordingFiles', 'events', 'smartDetectObjects', 'smartDetectObjectAreas',
-          'heatmaps', 'smartDetectTracks', 'ramDetections']
+# FK order for inserts (groups / labels are handled separately before these); rollback.sql deletes in the reverse
+# direction, children first
+TABLES = ['recordingFiles', 'events', 'smartDetectObjects', 'smartDetectObjectAreas', 'enhancedImages',
+          'heatmaps', 'smartDetectTracks', 'ramDetections', 'transcriptions']
 STAGED = ['smartDetectObjectGroups'] + TABLES + ['detectionLabels', 'labels']
 
 
@@ -540,10 +541,14 @@ do $$ declare n bigint; begin
     raise exception '% native rows hang off imported events / recordings / objects --- review the report, rerun with -v force=true', n;
   end if;
 end $$;
+delete from public.transcriptions where id in (select id from led where tbl = 'transcriptions');
 delete from public."ramDetections" where id in (select id from led where tbl = 'ramDetections');
 delete from public."smartDetectTracks" where id in (select id from led where tbl = 'smartDetectTracks');
 delete from public.heatmaps where id in (select id from led where tbl = 'heatmaps');
 delete from public."detectionLabels" where id in (select id from led where tbl = 'detectionLabels');
+-- explicitly (children first, like the rest): the images' FK to the objects is ON DELETE SET NULL, deleting the objects
+-- alone would leave them behind
+delete from public."enhancedImages" where id in (select id from led where tbl = 'enhancedImages');
 delete from public."smartDetectObjectAreas" where id in (select id from led where tbl = 'smartDetectObjectAreas');
 delete from public."smartDetectObjects" where id in (select id from led where tbl = 'smartDetectObjects');
 delete from public.events where id in (select id from led where tbl = 'events');
