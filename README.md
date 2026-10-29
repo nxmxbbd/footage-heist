@@ -181,7 +181,10 @@ other change to an imported recording row as a FAIL. `verify-media.sh` reports a
 of the camera's own recording as an `INFO` line: the rotating file covering the clip has no seek point in the clip's
 window and its seek points around it are more than `GAP_MS` (10 s) apart (`msr_ubvinfo -p` on the target, which ships
 with Protect; the file's bytes are the source's, so the hole was there before the import). Cameras show such holes
-right after their adoption (reboots). Any other failed export is a FAIL, and so is a sample in which no clip exported.
+right after their adoption (reboots). The event that fell in the hole is then replaced by the next event of the same
+batch (its imported events, at least 3 s long) that starts after the hole, up to `SUBS` (5) times, so the verdict rests
+on N exported events whether or not anyone reads the `INFO` lines; a sampled event that cannot be replaced is a FAIL.
+Any other failed export is a FAIL, and so is a sample in which no clip exported.
 `night.sh <batch> refresh-verify` brings an imported batch's
 `sql/verify.sql` (the local file and the target's copy, which `verify` runs) to the current `gen.py`'s recording check
 and changes nothing else; a batch not imported yet is regenerated and prepped instead.
@@ -310,7 +313,9 @@ through T0 to T19, most of them injected faults.
   or empty queries, the events count against the API, ffprobe's exit status and codec, and the recording-hole rule
   (INFO only for a window between seek points more than `GAP_MS` apart in the one covering file, across partitions;
   a seek point inside the window, a cut file, a seek point count that does not add up, a failing `msr_ubvinfo`, no or
-  several covering rows, and a sample without any exported clip stay failures).
+  several covering rows, and a sample without any exported clip stay failures), and the replacement of an event in a
+  hole (the next event of this batch's ledger after the hole, none sampled before; three holes in a row; `SUBS`
+  exhausted, no event left, or a failing query is a FAIL).
 - `tool/test-verify-rows.sh`: the copy verify's rows check on synthetic rows, and verify-staged.sh with fake ssh / scp
   (`*.invalid` hosts): the successor update of a deleted file passes and its source file is re-read (a mismatch fails,
   a file deleted since is skipped); a row added, any other change and an unexplained missing row fail.

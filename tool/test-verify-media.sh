@@ -23,9 +23,10 @@ case "\$*" in *msr_ubvinfo*)
     fail) echo 'cannot open file' >&2; exit 2 ;;
     inside) parts='1699999885000 1699999890000/1700000003000 1700000060000' ;;   # wide apart, one inside the window
     tail) parts='1699999980000 1699999985000 1699999990000' ;;
-    badhdr) parts='1699999885000 1699999890000/1700000060000 1700000065000'; bad1=1 ;;   # first header one short
-    onepart) parts='1699999885000 1699999890000 1700000060000 1700000065000' ;;
-    *) parts='1699999885000 1699999890000/1700000060000 1700000065000' ;;
+    badhdr) parts='1699999885000 1699999890000/1700000060000 1700000065000 1700000200000 1700000205000 1700000400000 1700000405000'; bad1=1 ;;   # first header one short
+    onepart) parts='1699999885000 1699999890000 1700000060000 1700000065000 1700000200000 1700000205000 1700000400000 1700000405000' ;;
+    # holes: ...890000 -> ...060000 (ev1, ev2), ...065000 -> ...200000 (ev3), ...205000 -> ...400000 (ev4); ev5 after the last point
+    *) parts='1699999885000 1699999890000/1700000060000 1700000065000 1700000200000 1700000205000 1700000400000 1700000405000' ;;
   esac
   i=0; IFS=/ read -ra pa <<< "\$parts"
   for part in "\${pa[@]}"; do
@@ -34,6 +35,14 @@ case "\$*" in *msr_ubvinfo*)
   done; exit 0 ;;
 esac
 case \$sql in
+  # the substitute after a hole: the first of ev3..ev5 (this batch's imported events) after "e.start >", not yet tried
+  *'order by e.start limit 1'*) echo "\$sql" >> "$T/sub.sql"
+     case \$(m subs) in fail) exit 255 ;; none) exit 0 ;; esac
+     after=\$(sed -n 's/.*e\.start > \([0-9]*\).*/\1/p' <<< "\$sql"); notin=\$(sed -n "s/.*not in (\([^)]*\)).*/\1/p" <<< "\$sql")
+     for e in 'ev3|1700000070000|1700000080000|motion' 'ev4|1700000210000|1700000220000|motion' 'ev5|1700000410000|1700000420000|smartDetectZone'; do
+       s=\$(cut -d'|' -f2 <<< "\$e"); i=\$(cut -d'|' -f1 <<< "\$e")
+       [ "\$s" -gt "\$after" ] && [[ ",\$notin," != *",'\$i',"* ]] && { echo "\$e"; exit 0; }
+     done; exit 0 ;;
   *'from "recordingFiles"'*) case \$(m files) in fail) exit 255 ;; none) exit 0 ;;
                                two) printf '/srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699990000000.ubv\n/srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699995000000.ubv\n' ;;
                                *) echo '/srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699990000000.ubv' ;; esac ;;
@@ -59,6 +68,7 @@ case \$url in
   */video/export\?*) case \$(cat "$T/mode/export" 2> /dev/null) in   # Protect's answer for a window without frames
                       all404) echo '{"error":502}' > "\$o"; printf 404 ;;
                       404first) case \$url in *start=1699999999000*) echo '{"error":502}' > "\$o"; printf 404 ;; *) echo video > "\$o"; printf 200 ;; esac ;;
+                      holes) case \$url in *start=1699999999000*|*start=1700000069000*|*start=1700000209000*) echo '{"error":502}' > "\$o"; printf 404 ;; *) echo video > "\$o"; printf 200 ;; esac ;;
                       *) echo video > "\$o"; printf 200 ;;
                     esac ;;
   */thumbnail|*/thumbnails/*) echo jpeg > "\$o"; printf '200 image/jpeg' ;;
@@ -120,8 +130,8 @@ rc=$(v probe=errh264); [ "$rc" = 1 ] && [ "$(grep -cF 'ffprobe: rc 1: [h264 @' "
 rc=$(v probe=novideo); [ "$rc" = 1 ] && has "ffprobe: duration=9.0" && ok "no video stream (rc 0): FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
 echo "M9 an export that fails in a hole of the camera's own recording is INFO; any other failed export stays a FAIL"
 rc=$(v export=404first); [ "$rc" = 0 ] && [ "$(grep -c "INFO .*export http=404: the window lies in a hole of the camera's own recording (no frame between seek points 11-14 22:11:30Z and 11-14 22:14:20Z (170 s) in 00005E005301_0_rotating_1699990000000.ubv)" "$T/out")" = 2 ] \
-  && [ "$(res)" = "RESULT pass=6 fail=0" ] && has "info=2" && ok "hole around the window: rc 0, ch0 + ch2 INFO, $(res)" || bad "rc=$rc $(tail -4 "$T/out")"
-rc=$(v export=404first ubv=onepart); [ "$rc" = 0 ] && [ "$(grep -c '^  INFO .*hole' "$T/out")" = 2 ] && ok "the same hole in a single-partition file: rc 0, INFO" || bad "rc=$rc $(tail -4 "$T/out")"
+  && [ "$(res)" = "RESULT pass=9 fail=0" ] && has "info=3" && ok "hole around the window: rc 0, ch0 + ch2 INFO, substitute exported, $(res)" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=404first ubv=onepart); [ "$rc" = 0 ] && [ "$(grep -c "^  INFO .*export http=404: the window lies in a hole" "$T/out")" = 2 ] && ok "the same hole in a single-partition file: rc 0, INFO" || bad "rc=$rc $(tail -4 "$T/out")"
 grep -qF 'msr_ubvinfo -f /srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699990000000.ubv -p' "$T/ssh.log" \
   && ok "msr_ubvinfo reads the file of the covering recordingFiles row" || bad "msr_ubvinfo call: $(grep msr_ubvinfo "$T/ssh.log" | tail -1)"
 rc=$(v export=404first ubv=inside); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && ! has "INFO" && ok "a seek point inside the window (frames were there): FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
@@ -134,8 +144,20 @@ for fm in none two fail; do
     && ok "covering row query: $fm -> FAIL, msr_ubvinfo not run" || bad "files=$fm rc=$rc $(tail -4 "$T/out")"
 done
 rc=$(v export=404first -- GAP_MS=200000); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && ok "a hole not above GAP_MS: FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
-rc=$(v export=all404); [ "$rc" = 1 ] && has "FAIL no clip of the sample exported" && [ "$(grep -c '^  INFO .*hole' "$T/out")" = 4 ] && [ "$(grep -c '^  FAIL' "$T/out")" = 1 ] \
-  && ok "every clip of the sample in a hole (4 INFO): no imported video checked is still a FAIL" || bad "rc=$rc $(tail -6 "$T/out")"
+rc=$(v export=all404); [ "$rc" = 1 ] && has "FAIL no clip of the sample exported" && has "FAIL slot 11-14 22:14: no imported event after the hole to substitute" \
+  && ok "no clip exports at all: substitutes run out, no imported video checked is a FAIL" || bad "rc=$rc $(tail -6 "$T/out")"
+echo "M10 an event in a hole is replaced by the next imported event of this batch after the hole (at most SUBS per slot)"
+: > "$T/sub.sql"; rc=$(v export=404first)
+has "INFO slot 11-14 22:13: substitute 1 = the next imported event after the hole: ev3 at 11-14 22:14:30Z" && has "PASS 11-14 22:14 motion ch0 export" \
+  && ok "the substitute is the next event after the hole, and it is exported and probed" || bad "rc=$rc $(grep -E 'INFO|FAIL' "$T/out" | head -3)"
+q=$(head -1 "$T/sub.sql")
+[[ $q == *"e.id in (select id from "*".ledger where batch = 'b1' and tbl = 'events')"* ]] && [[ $q == *"e.start > 1700000060000 "* ]] && [[ $q == *"not in ('ev1','ev2')"* ]] && [[ $q == *'"end" - e.start >= 3000'* ]] \
+  && ok "substitute query: only this batch's imported events (ledger), >= 3 s, after the hole, none sampled before" || bad "substitute query: $q"
+rc=$(v export=holes); [ "$rc" = 0 ] && has "substitute 3 = the next imported event after the hole: ev5" && [ "$(res)" = "RESULT pass=11 fail=0" ] && has "info=9" \
+  && ok "three holes in a row (as right after an adoption): 3 substitutes, the slot ends exported, $(res)" || bad "rc=$rc $(tail -5 "$T/out")"
+rc=$(v export=holes -- SUBS=2); [ "$rc" = 1 ] && has "FAIL slot 11-14 22:13: still in a hole after 2 substitutes" && ok "SUBS=2 with three holes: the slot is a FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=404first subs=none); [ "$rc" = 1 ] && has "FAIL slot 11-14 22:13: no imported event after the hole to substitute" && ok "no event after the hole: FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=404first subs=fail); [ "$rc" = 1 ] && has "FAIL slot 11-14 22:13: the substitute query failed" && ok "substitute query failing: FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
 other=$(cat "$T/ssh.log" "$T/curl.log" | grep -vF 'target.invalid')
 [ -s "$T/ssh.log" ] && [ -s "$T/curl.log" ] && [ -z "$other" ] && ok "every ssh / curl call addressed target.invalid (fakes)" || bad "calls elsewhere: $(echo "$other" | head -2)"
 

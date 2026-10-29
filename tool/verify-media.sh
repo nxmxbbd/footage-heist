@@ -2,8 +2,9 @@
 # verify-media.sh <batch_dir> --- post-window media acceptance through the Protect API (read-only on the target):
 #   - imported events visible through the events API
 #   - for N events spread over the imported range: export ch0 + ch2 clips (MP4) and ffprobe them; event thumbnail.
-#     An export that fails inside a hole of the camera's own recording (see hole()) is INFO, not FAIL; at least one
-#     clip of the sample must export
+#     An export that fails inside a hole of the camera's own recording (see hole()) is INFO, not FAIL, and that event
+#     is replaced by the next imported event after the hole (SUBS, default 5 tries), so N events are always verified;
+#     a slot that cannot be filled is a FAIL, and so is a sample in which no clip exported
 #   - object thumbnails (<MAC>-<ms> ids, served by MSP from the imported thumbnails .ubv)
 # UI session from TARGET_LOGIN_FILE (never on argv), TLS key pinned (TARGET_TLS_PIN_FILE), logout + shred at the end.
 set -uo pipefail
@@ -58,9 +59,9 @@ if not before or not after: sys.exit(1)
 p, n = before[-1], after[0]
 if n <= w1 or n - p <= gap: sys.exit(1)
 f = lambda t: datetime.datetime.fromtimestamp(t / 1000, datetime.timezone.utc).strftime("%m-%d %H:%M:%S")
-print(f"no frame between seek points {f(p)}Z and {f(n)}Z ({(n - p) / 1000:.0f} s)")
+print(f"{n}|no frame between seek points {f(p)}Z and {f(n)}Z ({(n - p) / 1000:.0f} s)")
 ' "$w0" "$w1" "$GAP_MS" <<< "$out") || return 1
-  hole="$hole in ${f##*/}"
+  hole_end=${hole%%|*}; hole="${hole#*|} in ${f##*/}"    # hole_end = the first seek point after the hole (ms)
 }
 
 curl -s -k --pinnedpubkey "$PIN" -c "$J" -D "$HD" -H 'Content-Type: application/json' --data @"$TARGET_LOGIN_FILE" $H/api/auth/login -o /dev/null -w 'login http=%{http_code}\n'
@@ -106,8 +107,11 @@ EOF
 then bad "event sample query failed: no clip, no event thumbnail was checked"; : > "$OUT/events.txt"
 elif [ ! -s "$OUT/events.txt" ]; then bad "no event of >= 3 s to export: no clip, no event thumbnail was checked"; fi
 exported=0
-while IFS='|' read -r id st en ty; do
-  d=$(date -u -d @$((st / 1000)) '+%m-%d %H:%M')
+# probe_event <id> <start> <type>: ch0 + ch2 export (+ ffprobe) and the event thumbnail. hit=1 when an export fell in a
+# hole of the camera's own recording (hit_end = the first seek point after it, the latest over the channels)
+probe_event() {
+  local id=$1 st=$2 ty=$3 d f code ch t
+  d=$(date -u -d @$((st / 1000)) '+%m-%d %H:%M'); hit=0; hit_end=0
   for ch in 0 2; do
     f="$OUT/$id-ch$ch.mp4"
     code=$(c -m 180 -o "$f" -w '%{http_code}' "$H/proxy/protect/api/video/export?camera=$UCAM&channel=$ch&start=$((st - 1000))&end=$((st + 8000))")
@@ -115,10 +119,30 @@ while IFS='|' read -r id st en ty; do
       probe "$f" && { ok "$d $ty ch$ch export: $(stat -c %s "$f") B, $p"; exported=$((exported+1)); } || bad "$d $ty ch$ch ffprobe: $p"
     elif hole "$ch" $((st - 1000)) $((st + 8000)) < /dev/null; then
       note "$d $ty ch$ch export http=$code: the window lies in a hole of the camera's own recording ($hole) --- not an import fault"
+      hit=1; [ "$hole_end" -gt "$hit_end" ] && hit_end=$hole_end
     else bad "$d $ty ch$ch export http=$code size=$(stat -c %s "$f" 2>/dev/null)"; fi
   done
   t=$(c -m 60 -o "$OUT/$id-thumb.jpg" -w '%{http_code} %{content_type}' "$H/proxy/protect/api/events/$id/thumbnail")
   case "$t" in "200 image/"*) ok "$d event thumbnail: $t $(stat -c %s "$OUT/$id-thumb.jpg") B";; *) bad "$d event thumbnail: $t";; esac
+}
+# A sampled event that fell in a hole is replaced by the next event of the SAME set ($EV: this batch's imported events,
+# >= 3 s, none sampled or tried before) that starts after the hole, at most SUBS times per sampled event: the verdict
+# rests on N exported events whether or not anyone reads the INFO lines. A slot that cannot be filled is a FAIL.
+SUBS=${SUBS:-5}
+tried=$(cut -d'|' -f1 "$OUT/events.txt" | sed "s/.*/'&'/" | paste -sd, -)
+while IFS='|' read -r id st en ty; do
+  k=0; slot=$(date -u -d @$((st / 1000)) '+%m-%d %H:%M')
+  while :; do
+    probe_event "$id" "$st" "$ty"
+    [ "$hit" = 0 ] && break
+    [ "$k" -lt "$SUBS" ] || { bad "slot $slot: still in a hole after $SUBS substitutes: no imported clip verified for it"; break; }
+    k=$((k + 1))
+    sub=$(echo "select id, start, \"end\", type from events e where e.id in ($EV) and e.\"end\" - e.start >= 3000 and e.start > $hit_end and e.id not in ($tried) order by e.start limit 1;" | rq) \
+      || { bad "slot $slot: the substitute query failed"; break; }
+    [[ $sub =~ ^[^|]+[|][0-9]+[|][0-9]+[|][^|]+$ ]] || { bad "slot $slot: no imported event after the hole to substitute"; break; }
+    IFS='|' read -r id st en ty <<< "$sub"; tried="$tried,'$id'"
+    note "slot $slot: substitute $k = the next imported event after the hole: $id at $(date -u -d @$((st / 1000)) '+%m-%d %H:%M:%S')Z"
+  done
 done < "$OUT/events.txt"
 # a sample whose every clip fell in holes verified no imported video at all: not a pass
 [ -s "$OUT/events.txt" ] && [ "$exported" = 0 ] && bad "no clip of the sample exported: no imported video was checked"
