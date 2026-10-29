@@ -112,7 +112,15 @@ runw() { env $(ENVV) PSQL_CMD="${PSQL_OVERRIDE:-$PSQL_REAL}" "${WINDOW_RUN:-$WIN
 slow_apply() {  # insert a long sleep into the apply transaction (application_name is already set by then)
   sed "s/^-- 3. labels missing on the target/select pg_sleep($1);\n-- 3. labels missing on the target/" "$BSRC/sql/apply.sql" > "$W/batch/sql/apply.sql"
 }
-wait_state() { local i; for i in $(seq 1 60); do [ "$(st)" = "$1" ] && return 0; sleep 0.5; done; return 1; }
+# wait_state <state> <worker pid>: 0 once the window script has journaled <state>; 1 when the worker exits first or the
+# deadline passes. No fixed 30 s: the stop phase plus linking 883 files took 25-40 s on the controller, and T9 then
+# killed the worker in state linking instead of sql (seen 10-29)
+wait_state() { local end=$(( $(date +%s) + ${WAIT_STATE_S:-900} ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    [ "$(st)" = "$1" ] && return 0
+    kill -0 "$2" 2>/dev/null || { [ "$(st)" = "$1" ]; return; }
+    sleep 0.5
+  done; return 1; }
 EXPECT_GO="stop unifi-protect.service,stop msr.service,stop msp.service,stop mst.service,start postgresql@14-protect.service,restart msr.service,start unifi-protect.service,"
 
 echo "T0 the window script refuses without its remote.env values, and refuses an unexpected remote.env key"
@@ -213,7 +221,10 @@ grep -q 'apply psql rc=2' "$W/run.log" && ok "psql failure was seen and overrule
 echo "T9 worker SIGKILLed during the SQL, then recover -> session terminated, not committed, links removed"
 reset_dst; setup; slow_apply 60
 ( env $(ENVV) PSQL_CMD="$PSQL_REAL" "$WINDOW" "$W/batch" go > "$W/run.log" 2>&1 & echo $! > "$W/pid" )
-wait_state sql && sleep 1; pid=$(cat "$W/pid"); pkill -9 -P "$pid"; kill -9 "$pid"; sleep 1
+pid=$(cat "$W/pid"); wait_state sql "$pid" && sleep 1; pkill -9 -P "$pid"; kill -9 "$pid"
+# recover as an operator would: once the killed worker's processes are gone (a child that outlives the SIGKILL keeps the
+# inherited lock, and recover then refuses with rc 75 by design, as T12 checks)
+flock -w 60 "$W/batch/.lock" true || bad "lock still held 60 s after the kill"
 [ "$(st)" = sql ] && ok "worker died in state sql" || bad "state=$(st)"
 [ -e "$GUARDF" ] && ok "guard still there (outage until recover)" || bad "guard gone?"
 runw recover; rc=$?
@@ -225,7 +236,7 @@ grep -q 'terminating 1 leftover' "$W/run.log" && ok "leftover apply session term
 echo "T10 SIGTERM during the SQL (KillMode=mixed) -> psql finishes, the EXIT trap recovers to done"
 reset_dst; setup; slow_apply 4
 ( env $(ENVV) PSQL_CMD="$PSQL_REAL" "$WINDOW" "$W/batch" go > "$W/run.log" 2>&1 & echo $! > "$W/pid" )
-wait_state sql && sleep 1; kill -TERM "$(cat "$W/pid")"
+wait_state sql "$(cat "$W/pid")" && sleep 1; kill -TERM "$(cat "$W/pid")"
 # psql must finish the whole apply first: poll until the worker exits (big batches run well past 20 s)
 t10_end=$(( $(date +%s) + ${T10_WAIT_S:-900} ))
 while kill -0 "$(cat "$W/pid")" 2>/dev/null && [ "$(date +%s)" -lt "$t10_end" ]; do sleep 0.5; done
