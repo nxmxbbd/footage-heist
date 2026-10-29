@@ -42,9 +42,11 @@ plan for one.
 ## Privacy
 
 Imported data includes face-recognition groups, with the names you gave them, and the face detections of the imported
-recordings, which carry the name they matched and face-recognition data. Detections, thumbnails and recordings show
-people, and importing extends how long all of this is kept. You are responsible for having a lawful basis for keeping
-it and for any retention limits that apply to you (for example as a business under the GDPR or a similar law).
+recordings, which carry the name they matched and face-recognition data, the enhanced face images Protect stored for
+some of them, and the speech transcriptions of the imported audio events (what was said near the camera, as text).
+Detections, thumbnails and recordings show people, and importing extends how long all of this is kept. You are
+responsible for having a lawful basis for keeping it and for any retention limits that apply to you (for example as a
+business under the GDPR or a similar law).
 
 This version has no switch that leaves face data behind: removing it would mean rewriting Protect's records into a
 shape that has not been validated on a console. If you may not keep this data, do not use this tool.
@@ -69,9 +71,9 @@ crew does sequels, never double features.
 1. **Copy** the camera's recording files from the source into a staging directory on the target's recording volume
    (outside Protect's video directory), hash-verified on both ends, rate-limited, resumable (`tool/copyq.py`). The
    loot is pre-positioned in the safe house's garage before anyone puts on a mask.
-2. **Extract** the camera's rows (events, detections, groups, labels, recording files) from a dump of the source's
-   database into a staging schema, with the static rewrites (camera id, AI processor id, paths) applied
-   (`tool/extract.sh`).
+2. **Extract** the camera's rows (events, detections, groups, labels, face images, transcriptions, recording files)
+   from a dump of the source's database into a staging schema, with the static rewrites (camera id, AI processor id,
+   paths) applied (`tool/extract.sh`).
 3. **Generate** the load, apply, rollback and verify SQL for the batch (`tool/gen.py`). At generation time it proves
    that every reference to a face or vehicle group sits on the list of places the apply step rewrites.
 4. **Test** against a fresh clone of the target's database: SQL scenarios (`tool/dryrun.sh`) and the window script
@@ -308,6 +310,11 @@ through T0 to T19, most of them injected faults.
   controller's container: a continued thumbnails / timelapse file is INFO, any other change (a rotating file's end,
   size, an earlier or missing end, free, any other column) a FAIL, a vanished row fails the present check; the
   previous check failed on the continued file; `gen.py --refresh-verify` replaces exactly that check or refuses.
+- `tool/test-child-tables.sh`: enhanced images and transcriptions through extract, gen, load, apply, verify and
+  rollback, in two throw-away databases of the controller's container (stub tables with Protect's foreign keys of these
+  two tables; extract.sh and gen.py reach the stub source through a fake docker): staged with the camera id rewritten,
+  the tables still not imported refuse the batch, a native child on an imported row blocks the rollback, the rollback
+  leaves no image behind (their foreign key only sets NULL), an id already on the target aborts the apply.
 - `install/test-render.sh`: render.sh's `--top-user` guard in a sandbox under `/run` (needs root and an unprivileged
   account named `nobody`).
 - After a tool change: regenerate an existing batch with `gen.py` and compare the output with the previous version's,
