@@ -14,7 +14,29 @@ cat > "$T/bin/ssh" << EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$T/ssh.log"
 sql=\$(cat); m() { cat "$T/mode/\$1" 2> /dev/null; }
+# msr_ubvinfo -p of the file covering ev1's export window [1699999999000, 1700000008000]: partitions (separated by /,
+# mode ubv), each printed as msr_ubvinfo does: a "seek points: N" header, then its seek points. hole (default) = 170 s
+# without a seek point around the window, across two partitions (a file of a camera that reconnected has several)
+case "\$*" in *msr_ubvinfo*)
+  bad1=
+  case \$(m ubv) in
+    fail) echo 'cannot open file' >&2; exit 2 ;;
+    inside) parts='1699999885000 1699999890000/1700000003000 1700000060000' ;;   # wide apart, one inside the window
+    tail) parts='1699999980000 1699999985000 1699999990000' ;;
+    badhdr) parts='1699999885000 1699999890000/1700000060000 1700000065000'; bad1=1 ;;   # first header one short
+    onepart) parts='1699999885000 1699999890000 1700000060000 1700000065000' ;;
+    *) parts='1699999885000 1699999890000/1700000060000 1700000065000' ;;
+  esac
+  i=0; IFS=/ read -ra pa <<< "\$parts"
+  for part in "\${pa[@]}"; do
+    set -- \$part; echo '----------------------'; echo "     seek points: \$(( \$# - \${bad1:-0} ))"; bad1=
+    j=0; for p in \$part; do echo "      \$j. OFF: \$((i * 1000 + 52)); WC: \$p"; i=\$((i + 1)); j=\$((j + 1)); done
+  done; exit 0 ;;
+esac
 case \$sql in
+  *'from "recordingFiles"'*) case \$(m files) in fail) exit 255 ;; none) exit 0 ;;
+                               two) printf '/srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699990000000.ubv\n/srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699995000000.ubv\n' ;;
+                               *) echo '/srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699990000000.ubv' ;; esac ;;
   *'min(e.start)'*) [ "\$(m range)" = fail ] && exit 255; echo '1700000000000|1700000100000' ;;
   *'count(*) from events'*) case \$(m count) in fail) exit 255 ;; zero) echo 0 ;; one) echo 1 ;; *) echo 2 ;; esac ;;
   *'with ev as'*) [ "\$(m events)" = fail ] && exit 255; [ "\$(m events)" = empty ] && exit 0
@@ -34,7 +56,11 @@ case \$url in
   */api/auth/login) printf 'x-csrf-token: tok\r\n' > "\$d"; echo 'login http=200' ;;
   */api/auth/logout) echo 'logout http=200' ;;
   */api/events\?*) case \$(cat "$T/mode/api" 2> /dev/null) in empty) echo '[]' ;; fill) python3 -c "print([{}] * \${url##*limit=})" ;; *) echo '[{}, {}]' ;; esac ;;
-  */video/export\?*) echo video > "\$o"; printf 200 ;;
+  */video/export\?*) case \$(cat "$T/mode/export" 2> /dev/null) in   # Protect's answer for a window without frames
+                      all404) echo '{"error":502}' > "\$o"; printf 404 ;;
+                      404first) case \$url in *start=1699999999000*) echo '{"error":502}' > "\$o"; printf 404 ;; *) echo video > "\$o"; printf 200 ;; esac ;;
+                      *) echo video > "\$o"; printf 200 ;;
+                    esac ;;
   */thumbnail|*/thumbnails/*) echo jpeg > "\$o"; printf '200 image/jpeg' ;;
   *) exit 7 ;;
 esac
@@ -92,6 +118,24 @@ rc=$(v api=fill); [ "$rc" = 1 ] && has "FAIL events API returned '104' (limit 10
 echo "M8 ffprobe: only exit 0 with a h264 / hevc video stream counts"
 rc=$(v probe=errh264); [ "$rc" = 1 ] && [ "$(grep -cF 'ffprobe: rc 1: [h264 @' "$T/out")" = 4 ] && ok "an error naming the codec, rc 1: all 4 clips FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
 rc=$(v probe=novideo); [ "$rc" = 1 ] && has "ffprobe: duration=9.0" && ok "no video stream (rc 0): FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+echo "M9 an export that fails in a hole of the camera's own recording is INFO; any other failed export stays a FAIL"
+rc=$(v export=404first); [ "$rc" = 0 ] && [ "$(grep -c "INFO .*export http=404: the window lies in a hole of the camera's own recording (no frame between seek points 11-14 22:11:30Z and 11-14 22:14:20Z (170 s) in 00005E005301_0_rotating_1699990000000.ubv)" "$T/out")" = 2 ] \
+  && [ "$(res)" = "RESULT pass=6 fail=0" ] && has "info=2" && ok "hole around the window: rc 0, ch0 + ch2 INFO, $(res)" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=404first ubv=onepart); [ "$rc" = 0 ] && [ "$(grep -c '^  INFO .*hole' "$T/out")" = 2 ] && ok "the same hole in a single-partition file: rc 0, INFO" || bad "rc=$rc $(tail -4 "$T/out")"
+grep -qF 'msr_ubvinfo -f /srv/unifi-protect/video/2023/11/14/00005E005301_0_rotating_1699990000000.ubv -p' "$T/ssh.log" \
+  && ok "msr_ubvinfo reads the file of the covering recordingFiles row" || bad "msr_ubvinfo call: $(grep msr_ubvinfo "$T/ssh.log" | tail -1)"
+rc=$(v export=404first ubv=inside); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && ! has "INFO" && ok "a seek point inside the window (frames were there): FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=404first ubv=tail); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && ok "no seek point after the window (a cut file): FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=404first ubv=badhdr); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && ok "seek points not adding up to the partition headers: FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=404first ubv=fail); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && ok "msr_ubvinfo failing: FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+for fm in none two fail; do
+  n0=$(grep -c msr_ubvinfo "$T/ssh.log")
+  rc=$(v export=404first files=$fm); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && [ "$(grep -c msr_ubvinfo "$T/ssh.log")" = "$n0" ] \
+    && ok "covering row query: $fm -> FAIL, msr_ubvinfo not run" || bad "files=$fm rc=$rc $(tail -4 "$T/out")"
+done
+rc=$(v export=404first -- GAP_MS=200000); [ "$rc" = 1 ] && [ "$(grep -c 'FAIL .*export http=404' "$T/out")" = 2 ] && ok "a hole not above GAP_MS: FAIL" || bad "rc=$rc $(tail -4 "$T/out")"
+rc=$(v export=all404); [ "$rc" = 1 ] && has "FAIL no clip of the sample exported" && [ "$(grep -c '^  INFO .*hole' "$T/out")" = 4 ] && [ "$(grep -c '^  FAIL' "$T/out")" = 1 ] \
+  && ok "every clip of the sample in a hole (4 INFO): no imported video checked is still a FAIL" || bad "rc=$rc $(tail -6 "$T/out")"
 other=$(cat "$T/ssh.log" "$T/curl.log" | grep -vF 'target.invalid')
 [ -s "$T/ssh.log" ] && [ -s "$T/curl.log" ] && [ -z "$other" ] && ok "every ssh / curl call addressed target.invalid (fakes)" || bad "calls elsewhere: $(echo "$other" | head -2)"
 

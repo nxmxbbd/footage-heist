@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # verify-media.sh <batch_dir> --- post-window media acceptance through the Protect API (read-only on the target):
 #   - imported events visible through the events API
-#   - for N events spread over the imported range: export ch0 + ch2 clips (MP4) and ffprobe them; event thumbnail
+#   - for N events spread over the imported range: export ch0 + ch2 clips (MP4) and ffprobe them; event thumbnail.
+#     An export that fails inside a hole of the camera's own recording (see hole()) is INFO, not FAIL; at least one
+#     clip of the sample must export
 #   - object thumbnails (<MAC>-<ms> ids, served by MSP from the imported thumbnails .ubv)
 # UI session from TARGET_LOGIN_FILE (never on argv), TLS key pinned (TARGET_TLS_PIN_FILE), logout + shred at the end.
 set -uo pipefail
@@ -26,9 +28,40 @@ J=$(mktemp); HD=$(mktemp)
 cleanup() { [ -n "${CSRF:-}" ] && curl -s -k --pinnedpubkey "$PIN" -b "$J" -H "X-CSRF-Token: $CSRF" -X POST $H/api/auth/logout -o /dev/null -w 'logout http=%{http_code}\n'; shred -u "$J" "$HD" 2>/dev/null; }
 trap cleanup EXIT
 c() { curl -s -k --pinnedpubkey "$PIN" -b "$J" -H "X-CSRF-Token: $CSRF" "$@"; }
-pass=0; fail=0
+pass=0; fail=0; info=0
 ok()  { echo "  PASS $*"; pass=$((pass+1)); }
 bad() { echo "  FAIL $*"; fail=$((fail+1)); }
+note() { echo "  INFO $*"; info=$((info+1)); }
+
+# hole <ch> <w0> <w1>: 0 (description in $hole) when the export window [w0, w1] (ms) lies in a hole of the camera's own
+# recording on that channel: the one rotating file whose row covers the window has seek points (msr_ubvinfo -p, about
+# every 5 s while the camera records) before and after the window, none inside it, and those two more than GAP_MS
+# apart. Seen 10-29: three ~2 min holes right after a camera's adoption (its reboots); the sampled first event fell in
+# one and Protect answered 404 {"error":502}. The file read is the imported one, whose bytes are the source's (the copy
+# verify compared every sha256): the hole was already in the source. Anything else is 1 and the export stays a FAIL:
+# no row or several, msr_ubvinfo failing, seek points that do not add up to the partition headers, no seek point after
+# the window (a cut file), or a seek point inside the window (frames were there: the export should have worked).
+GAP_MS=${GAP_MS:-10000}
+hole() {
+  local ch=$1 w0=$2 w1=$3 f out
+  f=$(echo "select folder || '/' || file from \"recordingFiles\" where \"cameraId\" = '$UCAM' and channel = $ch and type = 'rotating' and start <= $w0 and \"end\" >= $w1;" | rq) || return 1
+  [[ $f =~ ^/[A-Za-z0-9/_.-]+[.]ubv$ ]] || return 1     # exactly one row (a second line fails the match), a plain path
+  out=$(ssh "$U" "msr_ubvinfo -f $f -p" < /dev/null) || return 1
+  hole=$(python3 -c '
+import re, sys, datetime
+w0, w1, gap = map(int, sys.argv[1:4]); txt = sys.stdin.read()
+sp = sorted(int(x) for x in re.findall(r"^ *[0-9]+[.] OFF: [0-9]+; WC: ([0-9]+)$", txt, re.M))
+hdr = [int(x) for x in re.findall(r"^ *seek points: ([0-9]+)$", txt, re.M)]   # one header per partition (a camera
+if not sp or not hdr or sum(hdr) != len(sp): sys.exit(1)                        # reconnect starts one: 21 seen in a file)
+before = [s for s in sp if s <= w0]; after = [s for s in sp if s >= w0]
+if not before or not after: sys.exit(1)
+p, n = before[-1], after[0]
+if n <= w1 or n - p <= gap: sys.exit(1)
+f = lambda t: datetime.datetime.fromtimestamp(t / 1000, datetime.timezone.utc).strftime("%m-%d %H:%M:%S")
+print(f"no frame between seek points {f(p)}Z and {f(n)}Z ({(n - p) / 1000:.0f} s)")
+' "$w0" "$w1" "$GAP_MS" <<< "$out") || return 1
+  hole="$hole in ${f##*/}"
+}
 
 curl -s -k --pinnedpubkey "$PIN" -c "$J" -D "$HD" -H 'Content-Type: application/json' --data @"$TARGET_LOGIN_FILE" $H/api/auth/login -o /dev/null -w 'login http=%{http_code}\n'
 CSRF=$(grep -i '^x-csrf-token:' "$HD" | awk '{print $2}' | tr -d '\r')
@@ -72,18 +105,23 @@ where rn in (select distinct greatest(1, (cnt * k / greatest($N - 1, 1))::int) f
 EOF
 then bad "event sample query failed: no clip, no event thumbnail was checked"; : > "$OUT/events.txt"
 elif [ ! -s "$OUT/events.txt" ]; then bad "no event of >= 3 s to export: no clip, no event thumbnail was checked"; fi
+exported=0
 while IFS='|' read -r id st en ty; do
   d=$(date -u -d @$((st / 1000)) '+%m-%d %H:%M')
   for ch in 0 2; do
     f="$OUT/$id-ch$ch.mp4"
     code=$(c -m 180 -o "$f" -w '%{http_code}' "$H/proxy/protect/api/video/export?camera=$UCAM&channel=$ch&start=$((st - 1000))&end=$((st + 8000))")
     if [ "$code" = 200 ] && [ -s "$f" ]; then
-      probe "$f" && ok "$d $ty ch$ch export: $(stat -c %s "$f") B, $p" || bad "$d $ty ch$ch ffprobe: $p"
+      probe "$f" && { ok "$d $ty ch$ch export: $(stat -c %s "$f") B, $p"; exported=$((exported+1)); } || bad "$d $ty ch$ch ffprobe: $p"
+    elif hole "$ch" $((st - 1000)) $((st + 8000)) < /dev/null; then
+      note "$d $ty ch$ch export http=$code: the window lies in a hole of the camera's own recording ($hole) --- not an import fault"
     else bad "$d $ty ch$ch export http=$code size=$(stat -c %s "$f" 2>/dev/null)"; fi
   done
   t=$(c -m 60 -o "$OUT/$id-thumb.jpg" -w '%{http_code} %{content_type}' "$H/proxy/protect/api/events/$id/thumbnail")
   case "$t" in "200 image/"*) ok "$d event thumbnail: $t $(stat -c %s "$OUT/$id-thumb.jpg") B";; *) bad "$d event thumbnail: $t";; esac
 done < "$OUT/events.txt"
+# a sample whose every clip fell in holes verified no imported video at all: not a pass
+[ -s "$OUT/events.txt" ] && [ "$exported" = 0 ] && bad "no clip of the sample exported: no imported video was checked"
 
 if [ "${TEST_NATIVE:-}" = 1 ]; then
   echo "== positive control: the newest finished >= 3 s detection event of any camera"
@@ -113,5 +151,5 @@ while read -r tid; do
   case "$t" in "200 image/"*) ok "object thumbnail $tid: $t $(stat -c %s "$OUT/obj-$tid.jpg") B";; *) bad "object thumbnail $tid: $t";; esac
 done < "$OUT/thumbs.txt"
 
-echo "RESULT pass=$pass fail=$fail (artifacts: $OUT)"
+echo "RESULT pass=$pass fail=$fail info=$info (artifacts: $OUT)"
 [ "$fail" = 0 ]
